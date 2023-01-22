@@ -1674,14 +1674,11 @@ corresponds to each control for a gene.</p>
 log2(mean(Group1)/mean(Group2))</p>
 <pre class="r"><code>cond &lt;- matrixInts[, 1:5]
 ctrl &lt;- matrixInts[, 6:10]
-log2FoldChange &lt;- log2(cond/ctrl)
+log2FoldChange &lt;- log2(rowMeans(cond)/rowMeans(ctrl))
+
 log2FoldChange</code></pre>
-<pre><code>##            cond1     cond2      cond3       cond4      cond5
-## gene1  1.3514724  0.169925 -0.7369656 -0.28118175 -1.4757334
-## gene2  1.1955508 -1.980891 -3.1876270 -0.14359085  1.5000736
-## gene3  1.4436067 -1.286304  1.2730185 -1.25986713 -0.7318039
-## gene4 -0.3846639  3.700440  4.7188182 -2.25986713  2.5305147
-## gene5  2.4947647  2.082462 -3.0660892 -0.09515723  0.9159357</code></pre>
+<pre><code>##      gene1      gene2      gene3      gene4      gene5 
+## -0.1842000 -0.1631358 -0.3514724  0.5634828  0.5525410</code></pre>
 </div>
 
 

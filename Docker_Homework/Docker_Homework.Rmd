@@ -37,8 +37,10 @@ The log2 fold-change is log2(FC) = log2(mean(Group1)/mean(Group2))
 ```{r}
 cond <- matrixInts[, 1:5]
 ctrl <- matrixInts[, 6:10]
-log2FoldChange <- log2(cond/ctrl)
+log2FoldChange <- log2(rowMeans(cond)/rowMeans(ctrl))
+
 log2FoldChange
+
 ```
 
 
