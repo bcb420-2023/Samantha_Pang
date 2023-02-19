@@ -1,0 +1,334 @@
+---
+title: "Assignment 1: Data set selection and initial Processing"
+author: "Samantha Pang"
+date: February 14, 2023
+output: 
+  html_document:
+    toc: true
+bibliography: Assignment_1.bib
+nocite: "@*"
+---
+
+## Install and Load Packages 
+```{r, message=FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE)){
+  install.packages("BiocManager")
+}
+if (!requireNamespace("GEOmetadb", quietly = TRUE)){
+  BiocManager::install("GEOmetadb")}
+
+
+if (!requireNamespace("knitr", quietly = TRUE)){
+  install.packages("knitr")}
+
+if (!requireNamespace("edgeR", quietly = TRUE)){
+  install.packages("edgeR")}
+
+if (!requireNamespace("biomaRt", quietly = TRUE))
+  BiocManager::install("biomaRt")
+
+library("GEOmetadb")
+library("knitr")
+library("edgeR")
+library("biomaRt")
+```
+
+
+## Task 1: Selecting a Dataset 
+
+Selected GSE158752's expression data to analyze.  
+
+```{r, message=FALSE}
+# contact information 
+gse <- getGEO("GSE158752",GSEMatrix=FALSE)
+kable(data.frame(head(Meta(gse))), format = "html")
+```
+### Information about Platform - GSE158752
+
+**Platform title** : Illumina NextSeq 500 (Homo sapiens) <br>
+**Submission data** : Apr 15 2014 <br>
+**Last update data** : Mar 26 2019 <br>
+**Organism** : Homo sapiens <br>
+**Number of GEO datasets that use this techology** : 9932  <br>
+**Number of GEO samples that use this technology** : 291715  <br>
+
+```{r, results='hide'}
+# platform information (summarized above)
+current_gpl <- names(GPLList(gse))[1]
+current_gpl_info <- Meta(getGEO(current_gpl))
+current_gpl_info$title
+current_gpl_info$submission_date
+current_gpl_info$last_update_date
+current_gpl_info$organism
+length(current_gpl_info$series_id)
+length(current_gpl_info$sample_id)
+```
+
+### Get Expression Data 
+```{r, message=FALSE}
+# download folder named GSE158752 with raw counts data 
+sfiles = getGEOSuppFiles('GSE158752')
+fnames = rownames(sfiles)
+fnames
+
+# there are 2 supplemental files, first use the one containing raw counts 
+ace2_exp = read.delim(fnames[1],header=TRUE,
+                check.names = FALSE)
+
+# see what the file looks like 
+kable(ace2_exp[1:15,1:5], format = "html")
+```
+
+
+## Task 2: Assess and Clean Data 
+Now that we have our expression data downloaded, we can assess and filter it.
+```{r}
+# How many genes does it have
+dim(ace2_exp)
+colnames(ace2_exp)
+```
+The initial coverage is 26364 genes. There are 67 samples in total: 3 different diagnosis representing by the last initial. <br>
+H: Healthy Control <br>
+M: M/M Asthma (mild to moderate asthma) <br>
+S: Severe Asthma
+
+### Clean Data 
+Check for duplicate genes
+```{r}
+# Get the summarized counts for each gene
+summarized_gene_counts <- sort(table(ace2_exp$Sample),
+                               decreasing = TRUE)
+# Check the columns to see the frequency of genes
+kable(table(ace2_exp$Sample)[1:3], format="html")
+
+# Check for duplicates (where frequency is greater than 1) 
+knitr::kable(summarized_gene_counts[which(summarized_gene_counts>1)[1:5]], format="html")
+# There aren't any duplicate genes in this data as it shows all NA 
+```
+### Group sample data 
+Using the column names, we can identify each sample and assign them to groups. 
+They follow the naming scheme of IMSA[XXX]\_EPI\_[H or M or S], where [XXX] refers the the patient number and [H or M or S] refers to the diagnosis groups (Healthy, M/M, or Severe Asthma). 
+```{r}
+# Extract the part of column names between "IMSA" and "_S"
+samples <- data.frame(lapply(colnames(ace2_exp)[2:68], 
+                      function(x){gsub("^.*(.)$", "\\1", x)}))
+colnames(samples) <- colnames(ace2_exp)[2:68]
+rownames(samples) <- c("Diagnosis")
+samples <- data.frame(t(samples))  
+table(samples['Diagnosis'])
+```
+
+
+### Filter out low count genes
+Using edgeR to translate counts into "counts per million".
+```{r}
+# edgeR function cpm to translate counts to "counts per million"
+cpms = cpm(ace2_exp[,3:22])
+rownames(cpms) <- ace2_exp[,1]
+
+# get rid of low counts (remove features without at least 1 read per million in n of the samples)
+# n = size of the smallest group of replicates (in this data, n = 17)
+keep = rowSums(cpms >1) >=17
+ace2_exp_filtered = ace2_exp[keep,]
+dim(ace2_exp_filtered)
+```
+After filtering out low counts, there are 14221 genes. 
+
+## Task 3: Apply normalization to dataset
+
+### Boxplot (before normalization)
+Distribution of expression data.
+
+```{r warning=FALSE}
+data2plot <- log2(cpm(ace2_exp_filtered[, 2:68])) # log transforming the data 
+boxplot(data2plot, xlab = "Samples", ylab = "log2 CPM", 
+        las = 2, cex = 0.5, cex.lab = 0.5,
+        cex.axis = 0.5, main = "RNASeq Samples before Normalization") # change title
+#draw the median on each box plot
+abline(h = median(apply(data2plot, 2, median)), 
+       col = "green", lwd = 0.6, lty = "dashed")
+```
+
+### Density Plot (before normalization)
+```{r}
+counts_density <- apply(log2(cpm(ace2_exp_filtered[,3:22])), 2, density)
+
+#calculate the limits across all the 68 samples
+xlim <- 0; ylim <- 0
+for (i in 1:length(counts_density)) {
+  xlim <- range(c(xlim, counts_density[[i]]$x)); 
+  ylim <- range(c(ylim, counts_density[[i]]$y))
+}
+cols <- rainbow(length(counts_density))
+ltys <- rep(1, length(counts_density))
+
+#plot the first density plot to initialize the plot
+plot(counts_density[[1]], xlim=xlim, ylim=ylim, type="n", 
+     ylab="Smoothing density of log2-CPM", 
+     main="Density Plot Before Normalization", cex.lab = 0.85)
+#plot each sample line
+for (i in 1:length(counts_density)) 
+  lines(counts_density[[i]], col=cols[i], lty=ltys[i])
+#create legend
+legend("topright", colnames(data2plot),  
+       col=cols, lty=ltys, cex=0.75, 
+       border ="blue",  text.col = "green4", 
+       merge = TRUE, bg = "gray90")
+```
+
+### Normalizing by Distribution using TMM
+Trimmed Mean of M-values (TMM) normalization is a commonly used method of 
+normalization for RNA-seq data. This method is based on the hypothesis that 
+most genes aren't differentially expressed. This method is facilitated using the
+edgeR package.
+```{r}
+# Create an edgeR container for RNASeq count data
+filtered_data_matrix <- as.matrix(ace2_exp_filtered[,2:68])
+
+rownames(filtered_data_matrix) <- ace2_exp_filtered$Sample
+#Create. DGEList object
+d = DGEList(counts=filtered_data_matrix, group=samples$Diagnosis) 
+
+# Calculate the normalization factors
+d = calcNormFactors(d)
+#get the normalized data
+normalized_counts <- cpm(d)
+```
+
+### Boxplot (after normalization)
+```{r warning=FALSE}
+data2plot <- log2(normalized_counts) # log transforming the data 
+boxplot(data2plot, xlab = "Samples", ylab = "log2 CPM", 
+        las = 2, cex = 0.5, cex.lab = 0.5,
+        cex.axis = 0.5, main = "RNASeq Samples After Normalization") # change title
+#draw the median on each box plot
+abline(h = median(apply(data2plot, 2, median)), 
+       col = "green", lwd = 0.6, lty = "dashed")
+```
+<br>
+Looking at the results before and after normalization, there is small noticable 
+change. The medians visually align more closely.
+
+### Distribution Plot (after normalization)
+```{r}
+counts_density <- apply(log2(normalized_counts), 2, density)
+
+#calculate the limits across all the 68 samples
+xlim <- 0; ylim <- 0
+for (i in 1:length(counts_density)) {
+  xlim <- range(c(xlim, counts_density[[i]]$x)); 
+  ylim <- range(c(ylim, counts_density[[i]]$y))
+}
+cols <- rainbow(length(counts_density))
+ltys <- rep(1, length(counts_density))
+
+#plot the first density plot to initialize the plot
+plot(counts_density[[1]], xlim=xlim, ylim=ylim, type="n", 
+     ylab="Smoothing density of log2-CPM", 
+     main="Density Plot After Normalization", cex.lab = 0.85)
+#plot each sample line
+for (i in 1:length(counts_density)) 
+  lines(counts_density[[i]], col=cols[i], lty=ltys[i])
+#create legend
+legend("topright", colnames(data2plot),  
+       col=cols, lty=ltys, cex=0.75, 
+       border ="blue",  text.col = "green4", 
+       merge = TRUE, bg = "gray90")
+```
+<br>
+Similarly to the boxplot, the sample lines seem to show very little difference. 
+After normalization, the lines seem to show less divergence. 
+
+### MDS Plot (after normalization)
+A multidimenstional scaling plot (MDS) represents the distances between samples.
+
+```{r}
+plotMDS(d, labels=rownames(samples),
+        col = c("darkgreen","blue")[factor(samples$Diagnosis)])
+```
+<br>
+
+## Task 4: Map Identifiers
+
+Seeing the filtered data, the genes are represented by HUGO symbols. Use biomaRt to map to HUGO symbols. 
+```{r}
+# Connect to ensembl
+ensembl <- useMart("ensembl")
+
+# Use human dataset 
+ensembl <- useDataset("hsapiens_gene_ensembl", mart = ensembl)
+
+# Check if HUGO symbols in dataset line up with HUGO symbols in ensembl
+# convert column of gene IDs to Hugo symbols
+geneMapping <- getBM(attributes = c("hgnc_symbol"),
+                     mart = ensembl,
+                     filters = "hgnc_symbol",
+                     values = ace2_exp_filtered$Sample)
+nrow(geneMapping)
+
+
+# Difference before and after mapping
+nrow(ace2_exp_filtered) - nrow(geneMapping)
+
+# Proportion of gene names that couldn't be mapped?
+(nrow(ace2_exp_filtered) - nrow(geneMapping))/nrow(ace2_exp_filtered) * 100
+# 1171 gene names couldn't be mapped to HUGO symbols, meaning a proportion of  8.234301%.
+
+# Duplicates of the HUGO symbols? 
+nrow(geneMapping) - length(unique(geneMapping$hgnc_symbol))
+# No duplicate mapped HUGO symbols. 
+
+# merge the two data frames 
+normalized_counts_ids <- merge(geneMapping,normalized_counts,
+by.x = 1, by.y = 0, all.y=TRUE)
+knitr::kable(normalized_counts_ids[1:5,1:7],type = "html")
+
+# format this dataset's rownames to be HUGO symbols instead of numbers 
+
+rownames(normalized_counts_ids) <- normalized_counts_ids$hgnc_symbol
+dim(normalized_counts_ids)
+
+```
+
+## Task 5: Interpretation 
+### What are the control and test conditions of the dataset?
+The control and test conditions of the dataset were patients being categorized as 
+healthy controls, patients with mild to moderate asthma, and patients with severe asthma.
+They all enrolled in ISMA (Immune Modulation in Severe Asthma) cohort where they underwent  
+research bronchoscopy with endobronchial brushing. 
+
+They tested for the expression of ACE2 (angiotensin-converting enzyme-2) to see if 
+it may be linked to patients with asthma as increased ACE2 expression
+suggests increased capacity for viral binding.
+
+### Why is the dataset of interest to you?
+Research into SARS-CoV-2 is relatively new and I wanted to delve into analyzing 
+data that hasn't depreciated over the years. I also found this dataset to be interesting
+as asthma is such a prevalent respiratory condition where it affects millions worldwide. 
+Research into if individuals with asthma are more susceptible to SARS-CoV-2 is interesting as asthma and 
+SARS-CoV-2 share many respiratory symptoms. 
+
+### Were there expression values that were not unique for specific genes? How did you handle these?
+There were no duplicates in the dataset based on the gene identifiers that were 
+analyzed from the read counts file.
+
+### Were there expression values that could not be mapped to current HUGO symbols?
+Yes, there were 1171 gene names that couldn't be mapped to HUGO symbols. This is a proportion of 8.234301%
+of gene names that weren't mapped in the merged data after mapping to HUGO symbols. 
+
+### How many outliers were removed?
+The data set started out with 26,364 genes before gene were filtered out for having 
+low counts (<1 read per million in n of the samples). Afterwards, there were 
+14,221. This means 12,143 outliers were removed.
+
+### How did you handle replicates?
+All replicates in the control and test data were kept in the data set. Though a majority of 
+replicated were cut by filtering out low read counts.
+
+### What is the final coverage of your dataset?
+The final coverage of my dataset is 14,221 genes and 67 samples.
+
+## References
+*Note: All code heavily references Ruth Isserlin's BCB420 Lectures 4 and 5 on how to assess, clean, normalize and map data.*
+
+
